@@ -181,7 +181,7 @@ static int SendAging(int fd) {
   char msgBuf[256];
   int len = sprintf(msgBuf, "aging\n");
   msgBuf[len] = 0;
-  if (send(fd, msgBuf, len) == -1) {
+  if (send(fd, msgBuf, len)) {
     std::cerr << "GTest: Aging failed to send to simulator" << std::endl;
   }
 }
@@ -197,7 +197,7 @@ static int SendWarmup(int fd) {
   char msgBuf[256];
   int len = sprintf(msgBuf, "warmup\n");
   msgBuf[len] = 0;
-  if (send(fd, msgBuf, len) == -1) {
+  if (send(fd, msgBuf, len)) {
     std::cerr << "GTest: Aging failed to send to simulator" << std::endl;
   }
 }
@@ -255,6 +255,26 @@ class Topology4 : public testing::Test {
   int controllerPid;
 };
 
+class Topology5 : public testing::Test {
+ public:
+  void SetUp() { ASSERT_EQ(Prepare(readFd, writeFd, controllerPid), 0); }
+  void TearDown() { ClearProcessAndWaitExit(controllerPid); }
+
+  int readFd;
+  int writeFd;
+  int controllerPid;
+};
+
+class Topology6 : public testing::Test {
+ public:
+  void SetUp() { ASSERT_EQ(Prepare(readFd, writeFd, controllerPid), 0); }
+  void TearDown() { ClearProcessAndWaitExit(controllerPid); }
+
+  int readFd;
+  int writeFd;
+  int controllerPid;
+};
+
 TEST_F(Topology1, Forwarding) {
   // New Switch
   SendNew(writeFd, 4);
@@ -286,9 +306,9 @@ TEST_F(Topology1, Forwarding) {
   //  }
   SendWarmup(writeFd);
   ret = RecvWarmup(readFd);
+  ASSERT_NE(ret, -1);
   if (ret == -1) {
     std::cerr << "GTest : Warmup forwarding table fails" << std::endl;
-    return;
   }
 
   int len = 0;
@@ -326,6 +346,8 @@ TEST_F(Topology1, SwitchAging) {
 
   int switchId, ret;
   ret = RecvNew(readFd, switchId);
+  ASSERT_NE(ret, -1);
+
   if (ret == -1) {
     std::cerr << "Create new Switch fail" << std::endl;
   }
@@ -429,10 +451,7 @@ TEST_F(Topology2, Forwarding) {
   //    }
   //  }
   SendWarmup(writeFd);
-  if (-1 == RecvWarmup(readFd)) {
-    std::cerr << "GTest : Warmup forwarding table fails" << std::endl;
-    return;
-  }
+  ASSERT_NE(-1, RecvWarmup(readFd));
 
   // Start forwarding test.
   int len;
@@ -594,10 +613,7 @@ TEST_F(Topology3, Forwarding) {
   //  }
 
   SendWarmup(writeFd);
-  if (-1 == RecvWarmup(readFd)) {
-    std::cerr << "GTest : Warmup forwarding table fails" << std::endl;
-    return;
-  }
+  ASSERT_NE(-1, RecvWarmup(readFd));
 
   int kDistance[kNumHost][kNumHost] = {{0, 1, 2, 2, 3, 3}, {1, 0, 2, 2, 3, 3},
                                        {2, 2, 0, 1, 2, 2}, {2, 2, 1, 0, 2, 2},
@@ -827,19 +843,6 @@ TEST_F(Topology4, Mixing) {
   char srcAddr[20];
   char msgBuf[256], resultBuf[256];
 
-  // Warmup the MAC Table of each switch.
-  //  for (int i = 0; i < kNumHost; i++) {
-  //    for (int j = 0; j < kNumHost; j++) {
-  //      char msgBuf[256] = {};
-  //      if (i == j) {
-  //        continue;
-  //      }
-  //      bzero(msgBuf, sizeof(msgBuf));
-  //      sprintf(msgBuf, "HelloFrom%dTo%d", i, j);
-  //      send_hostbroadcast(writeFd, hostEtherAddrs[i], hostEtherAddrs[j],
-  //      msgBuf); SendNS(writeFd);
-  //    }
-  //  }
   SendWarmup(writeFd);
   EXPECT_NE(RecvWarmup(readFd), -1);
 
@@ -857,6 +860,175 @@ TEST_F(Topology4, Mixing) {
         int si = i / 2;
         int sj = j / 2;
         int expectLen = std::abs(si - sj) + 1;
+
+        EXPECT_EQ(len, expectLen);
+        EXPECT_EQ(strcmp(msgBuf, resultBuf), 0);
+      }
+    }
+  }
+
+  // Send Aging message to controller.
+  for (int i = 0; i < 7; i++) {
+    SendAging(writeFd);
+    RecvAging(readFd);
+  }
+
+  // generatng random pair
+  int src = rand() % kNumHost;
+  int dest = rand() % kNumHost;
+  while (dest == src) {
+    dest = rand() % kNumHost;
+  }
+
+  // This dest -> src should not be flushed.
+  SendHostsend(writeFd, hostEtherAddrs[dest], hostEtherAddrs[src], msgBuf);
+  RecvHostsend(readFd, len, srcAddr, resultBuf);
+  EXPECT_NE(len, -3);
+
+  for (int i = 0; i < 7; i++) {
+    SendAging(writeFd);
+    RecvAging(readFd);
+  }
+
+  // This src -> dest should not be flushed.
+  SendHostsend(writeFd, hostEtherAddrs[src], hostEtherAddrs[dest], msgBuf);
+  RecvHostsend(readFd, len, srcAddr, resultBuf);
+  EXPECT_NE(len, -3);
+
+  SendExit(writeFd);
+  int retVal = WaitExit(controllerPid);
+  EXPECT_GE(retVal, 0);
+  return;
+}
+
+TEST_F(Topology5, Mixing) {
+  const int kNumHost = 10;
+  const int kNumSwitch = 10;
+
+  int switchIds[kNumSwitch] = {};
+  char hostEtherAddrs[kNumHost][19] = {
+      "de:ad:be:ef:00:01", "de:ad:be:ef:00:02", "de:ad:be:ef:00:03",
+      "de:ad:be:ef:00:04", "de:ad:be:ef:00:05", "de:ad:be:ef:00:06",
+      "de:ad:be:ef:00:07", "de:ad:be:ef:00:08", "de:ad:be:ef:00:09",
+      "de:ad:be:ef:00:0a"};
+
+  for (int i = 0; i < kNumSwitch; i++) {
+    SendNew(writeFd, 4);
+    ASSERT_NE(RecvNew(readFd, switchIds[i]), -1);
+  }
+
+  for (int i = 0; i < kNumSwitch - 1; i++) {
+    SendLink(writeFd, switchIds[i], switchIds[i + 1]);
+  }
+
+  for (int i = 0; i < kNumHost; i++) {
+    SendAddHost(writeFd, switchIds[i], hostEtherAddrs[i]);
+  }
+
+  int len = 0;
+  char srcAddr[20];
+  char msgBuf[256], resultBuf[256];
+
+  SendWarmup(writeFd);
+  EXPECT_NE(RecvWarmup(readFd), -1);
+
+  bzero(msgBuf, sizeof(msgBuf));
+  sprintf(msgBuf, "HelloFromTopology5MixingTest");
+
+  for (int i = 0; i < kNumHost; i++) {
+    for (int j = 0; j < kNumHost; j++) {
+      if (i != j) {
+        bzero(resultBuf, sizeof(resultBuf));
+        SendHostsend(writeFd, hostEtherAddrs[i], hostEtherAddrs[j], msgBuf);
+        RecvHostsend(readFd, len, srcAddr, resultBuf);
+
+        int expectLen = std::abs(i - j) + 1;
+
+        EXPECT_EQ(len, expectLen);
+        EXPECT_EQ(strcmp(msgBuf, resultBuf), 0);
+      }
+    }
+  }
+
+  // Send Aging message to controller.
+  for (int i = 0; i < 7; i++) {
+    SendAging(writeFd);
+    RecvAging(readFd);
+  }
+
+  // generatng random pair
+  int src = rand() % kNumHost;
+  int dest = rand() % kNumHost;
+  while (dest == src) {
+    dest = rand() % kNumHost;
+  }
+
+  // This dest -> src should not be flushed.
+  SendHostsend(writeFd, hostEtherAddrs[dest], hostEtherAddrs[src], msgBuf);
+  RecvHostsend(readFd, len, srcAddr, resultBuf);
+  EXPECT_NE(len, -3);
+
+  for (int i = 0; i < 7; i++) {
+    SendAging(writeFd);
+    RecvAging(readFd);
+  }
+
+  // This src -> dest should not be flushed.
+  SendHostsend(writeFd, hostEtherAddrs[src], hostEtherAddrs[dest], msgBuf);
+  RecvHostsend(readFd, len, srcAddr, resultBuf);
+  EXPECT_NE(len, -3);
+
+  SendExit(writeFd);
+  int retVal = WaitExit(controllerPid);
+  EXPECT_GE(retVal, 0);
+  return;
+}
+
+TEST_F(Topology6, Mixing) {
+  const int kNumHost = 20;
+  const int kNumSwitch = 20;
+
+  int switchIds[kNumSwitch] = {};
+  char hostEtherAddrs[kNumHost][19] = {
+      "de:ad:be:ef:00:01", "de:ad:be:ef:00:02", "de:ad:be:ef:00:03",
+      "de:ad:be:ef:00:04", "de:ad:be:ef:00:05", "de:ad:be:ef:00:06",
+      "de:ad:be:ef:00:07", "de:ad:be:ef:00:08", "de:ad:be:ef:00:09",
+      "de:ad:be:ef:00:0a", "de:ad:be:ef:00:0b", "de:ad:be:ef:00:0c",
+      "de:ad:be:ef:00:0d", "de:ad:be:ef:00:0e", "de:ad:be:ef:00:0f",
+      "de:ad:be:ef:00:10", "de:ad:be:ef:00:11", "de:ad:be:ef:00:12",
+      "de:ad:be:ef:00:13", "de:ad:be:ef:00:14"};
+
+  for (int i = 0; i < kNumSwitch; i++) {
+    SendNew(writeFd, 4);
+    ASSERT_NE(RecvNew(readFd, switchIds[i]), -1);
+  }
+
+  for (int i = 0; i < kNumSwitch - 1; i++) {
+    SendLink(writeFd, switchIds[i], switchIds[i + 1]);
+  }
+
+  for (int i = 0; i < kNumHost; i++) {
+    SendAddHost(writeFd, switchIds[i], hostEtherAddrs[i]);
+  }
+
+  int len = 0;
+  char srcAddr[20];
+  char msgBuf[256], resultBuf[256];
+
+  SendWarmup(writeFd);
+  EXPECT_NE(RecvWarmup(readFd), -1);
+
+  bzero(msgBuf, sizeof(msgBuf));
+  sprintf(msgBuf, "HelloFromTopology5MixingTest");
+
+  for (int i = 0; i < kNumHost; i++) {
+    for (int j = 0; j < kNumHost; j++) {
+      if (i != j) {
+        bzero(resultBuf, sizeof(resultBuf));
+        SendHostsend(writeFd, hostEtherAddrs[i], hostEtherAddrs[j], msgBuf);
+        RecvHostsend(readFd, len, srcAddr, resultBuf);
+
+        int expectLen = std::abs(i - j) + 1;
 
         EXPECT_EQ(len, expectLen);
         EXPECT_EQ(strcmp(msgBuf, resultBuf), 0);
