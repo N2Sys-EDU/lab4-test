@@ -177,7 +177,7 @@ static int RecvHostsend(int fd, int &len, char *src, char *payload) {
   return ret;
 }
 
-static int SendAging(int fd) {
+static void SendAging(int fd) {
   char msgBuf[256];
   int len = sprintf(msgBuf, "aging\n");
   msgBuf[len] = 0;
@@ -193,7 +193,7 @@ static int RecvAging(int fd) {
   return ret;
 }
 
-static int SendWarmup(int fd) {
+static void SendWarmup(int fd) {
   char msgBuf[256];
   int len = sprintf(msgBuf, "warmup\n");
   msgBuf[len] = 0;
